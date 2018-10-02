@@ -16,12 +16,6 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ## good reason. For example, in a VM when testing the install script, it may be beneficial to use urandom
 ## instead as it will likely generate entropy properly as opposed to random.
 
-if ! cat /etc/nixos/configuration.nix | grep -q zfs 2>&1 >/dev/null; then
-    sed -i"" 's|}$|  boot.zfs.enableUnstable = true;\n  boot.supportedFilesystems = [ "zfs" ];\n}|g' /etc/nixos/configuration.nix
-    nixos-rebuild switch
-fi
-cat /etc/nixos/configuration.nix
-
 DEVRANDOM=${DEVRANDOM:-/dev/random}
 
 ## This will be formatted! It should be the path to the device, not a partition.
@@ -34,6 +28,11 @@ fi
 
 if [ ! -e "$DISK" ]; then
     echo "'$DISK' does not exist"
+    exit 1
+fi
+
+if ! echo "$DISK" | grep -q "by-id"; then
+    echo "Please reference the disk via /dev/by-id path"
     exit 1
 fi
 
@@ -60,20 +59,16 @@ fi
 
 GATEWAY=$(echo $IPV4 | sed -E 's|[0-9]+$|1|g')
 HOSTID=$(head -c4 /dev/urandom | od -A none -t x4 | sed 's| ||g')
-echo "-------------------------------------------------------------"
+ETHMOD=$(lspci -v -s $(lspci | grep Ethernet | awk '{print $1}') | grep "Kernel modules" | awk '{print $NF}')
+
+echo "---------------------------- Review ---------------------------"
 echo "Disk: $DISK"
 echo "Hostname: $HNAME"
 echo "Ip: $IPV4"
 echo "Ethernet interface: $ENIF"
 echo "HostId: $HOSTID"
-ETHMOD=$(lspci -v -s $(lspci | grep Ethernet | awk '{print $1}') | grep "Kernel modules" | awk '{print $NF}')
 echo "Ethernet module: '$ETHMOD'"
-echo "-------------------------------------------------------------"
-
-if ! echo "$DISK" | grep -q "by-id"; then
-    echo "Please reference the disk via /dev/by-id path"
-    exit 1
-fi
+echo "---------------------------------------------------------------"
 
 echo "Will completely erase and format '$DISK', proceed? (y/n)"
 read answer
@@ -81,6 +76,12 @@ if ! echo "$answer" | grep '^[Yy].*' 2>&1>/dev/null; then
     echo "Ok bye."
     exit
 fi
+
+if ! cat /etc/nixos/configuration.nix | grep -q zfs 2>&1 >/dev/null; then
+    sed -i"" 's|}$|  boot.zfs.enableUnstable = true;\n  boot.supportedFilesystems = [ "zfs" ];\n}|g' /etc/nixos/configuration.nix
+    nixos-rebuild switch
+fi
+cat /etc/nixos/configuration.nix
 
 # clear out the disk completely
 wipefs -fa $DISK
