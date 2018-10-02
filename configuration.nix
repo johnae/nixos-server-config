@@ -83,7 +83,7 @@ in
   users.groups."${meta.userName}".gid = 1337;
   users.users."${meta.userName}" = {
     isNormalUser = true;
-    extraGroups = [ "wheel" ];
+    extraGroups = [ "wheel" "docker" ];
     shell = pkgs.fish;
     uid = 1337;
     description = meta.userDescription;
