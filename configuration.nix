@@ -52,6 +52,8 @@ in
   networking.defaultGateway = meta.defaultGateway;
   networking.useDHCP = false;
 
+  networking.firewall.enable = false;
+
   virtualisation.docker.enable = true;
   virtualisation.docker.storageDriver = "zfs";
 
