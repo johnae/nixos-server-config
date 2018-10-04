@@ -16,8 +16,8 @@ in
   # Use the systemd-boot EFI boot loader.
   boot = {
     ## check with lspci -v -s <module>
-    ## ip=192.168.1.100:::255.255.255.0:somehostname:eth0:on
-    kernelParams = ["ip=${meta.ipv4}:::255.255.255.0:${meta.hostName}:eth0:none"];
+    ## ip=192.168.1.100::192.168.1.1:255.255.255.0:somehostname:eth0:on
+    kernelParams = ["ip=${meta.ipv4}::${meta.defaultGateway}:255.255.255.0:${meta.hostName}:eth0:none"];
     initrd.availableKernelModules = meta.initrdAvailableKernelModules;
     initrd.network = {
       enable = true;
