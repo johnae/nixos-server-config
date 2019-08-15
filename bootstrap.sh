@@ -4,10 +4,9 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 
 ## This script bootstraps a nixos install. The assumptions are:
 # 1. You want an EFI System Partition (500MB) - so no BIOS support
-# 2. You want encrypted root and swap
-# 3. You want swap space size to be half of RAM as per modern standards (eg. see https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/installation_guide/sect-disk-partitioning-setup-x86#sect-recommended-partitioning-scheme-x86)
-# 4. You want to use zfs for everything else
-# 5. You want to not care about atime and you want to compress your fs
+# 2. You want swap space size to be half of RAM as per modern standards (eg. see https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/installation_guide/sect-disk-partitioning-setup-x86#sect-recommended-partitioning-scheme-x86)
+# 3. You want to use btrfs for everything else
+# 4. You want to not care about atime and you want to compress your fs using zstd
 
 # set -x
 
@@ -17,6 +16,7 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ## instead as it will likely generate entropy properly as opposed to random.
 
 DEVRANDOM=${DEVRANDOM:-/dev/random}
+EXTERNALDISK=${EXTERNALDISK:-}
 
 ## This will be formatted! It should be the path to the device, not a partition.
 DISK=$1
@@ -31,9 +31,11 @@ if [ ! -e "$DISK" ]; then
     exit 1
 fi
 
-if ! echo "$DISK" | grep -q "by-id"; then
-    echo "Please reference the disk via /dev/by-id path"
-    exit 1
+if [ -n "$EXTERNALDISK" ]; then
+    if [ ! -e "$EXTERNALDISK" ]; then
+        echo "'$EXTERNALDISK' does not exist but was given"
+        exit 1
+    fi
 fi
 
 HNAME=$1 ## hostname
@@ -50,6 +52,11 @@ if [ -z "$IPV4" ]; then
     exit 1
 fi
 
+PARTITION_PREFIX=""
+if echo "$DISK" | grep -q "nvme"; then
+    PARTITION_PREFIX="p"
+fi
+
 ENIF=${1:-"eth0"}
 shift
 if [ -z "$ENIF" ]; then
@@ -59,7 +66,7 @@ fi
 
 GATEWAY=$(echo $IPV4 | sed -E 's|[0-9]+$|1|g')
 HOSTID=$(head -c4 /dev/urandom | od -A none -t x4 | sed 's| ||g')
-ETHMOD=$(lspci -v -s $(lspci | grep Ethernet | awk '{print $1}') | grep "Kernel modules" | awk '{print $NF}')
+#ETHMOD=$(lspci -v -s $(lspci | grep Ethernet | awk '{print $1}') | grep "Kernel modules" | awk '{print $NF}')
 
 echo "---------------------------- Review ---------------------------"
 echo "Disk: $DISK"
@@ -67,7 +74,7 @@ echo "Hostname: $HNAME"
 echo "Ip: $IPV4"
 echo "Ethernet interface: $ENIF"
 echo "HostId: $HOSTID"
-echo "Ethernet module: '$ETHMOD'"
+#echo "Ethernet module: '$ETHMOD'"
 echo "---------------------------------------------------------------"
 
 echo "Will completely erase and format '$DISK', proceed? (y/n)"
@@ -77,15 +84,12 @@ if ! echo "$answer" | grep '^[Yy].*' 2>&1>/dev/null; then
     exit
 fi
 
-if ! cat /etc/nixos/configuration.nix | grep -q zfs 2>&1 >/dev/null; then
-    sed -i"" 's|}$|  boot.zfs.enableUnstable = true;\n  boot.supportedFilesystems = [ "zfs" ];\n}|g' /etc/nixos/configuration.nix
-    nixos-rebuild switch
-fi
-cat /etc/nixos/configuration.nix
-
 # clear out the disk completely
 wipefs -fa $DISK
 sgdisk -Z $DISK
+
+# clear out any efi dumps
+rm -f /sys/firmware/efi/efivars/dump-*
 
 efi_space=500M # EF00 EFI Partition
 #luks_key_space=3M # 8300
@@ -101,15 +105,15 @@ fi
 sgdisk -og $DISK
 
 sgdisk -n 0:0:+$efi_space -t 0:ef00 -c 0:"efi" $DISK # 1
-# sgdisk -n 0:0:+$luks_key_space -t 0:8300 -c 0:"cryptkey" $DISK # 2
-#sgdisk -n 0:0:+$swap_space -t 0:8300 -c 0:"swap" $DISK # 3
-sgdisk -n 0:0:0 -t 0:BF01 -c 0:"zfsroot" $DISK # 2
+#sgdisk -n 0:0:+$luks_key_space -t 0:8300 -c 0:"cryptkey" $DISK # 2
+sgdisk -n 0:0:+$swap_space -t 0:8300 -c 0:"swap" $DISK # 2
+sgdisk -n 0:0:0 -t 0:8300 -c 0:"root" $DISK # 3
 
-DISK_EFI=$DISK$PARTITION_PREFIX"-part1"
+DISK_EFI=$DISK$PARTITION_PREFIX"1"
 #DISK_CRYPTKEY=$DISK$PARTITION_PREFIX"2"
-#DISK_SWAP=$DISK$PARTITION_PREFIX"3"
-DISK_ROOT=$DISK$PARTITION_PREFIX"-part2"
-ZROOT=zroot
+DISK_SWAP=$DISK$PARTITION_PREFIX"2"
+DISK_ROOT=$DISK$PARTITION_PREFIX"3"
+#ZROOT=zroot
 
 sgdisk -p $DISK
 
@@ -117,32 +121,84 @@ sgdisk -p $DISK
 partprobe $DISK
 fdisk -l $DISK
 
-#nix-env -iA nixos.zfsUnstable
+mkswap -f $DISK_SWAP
+swapon $DISK_SWAP
 
-# create the encrypted zpool
-zpool create -f -o ashift=12 -o altroot="/mnt" -O compression=lz4 -O encryption=aes-256-gcm -O keyformat=passphrase $ZROOT $DISK_ROOT
-
-zfs create -V $swap_space -b $(getconf PAGESIZE) -o compression=zle \
-    -o logbias=throughput -o sync=always \
-    -o primarycache=metadata -o secondarycache=none \
-    -o com.sun:auto-snapshot=false $ZROOT/swap
-
-zfs create -o mountpoint=none $ZROOT/root
-zfs create -o mountpoint=legacy $ZROOT/root/nixos
-zfs create -o mountpoint=legacy $ZROOT/home
-
-mkswap -f /dev/zvol/$ZROOT/swap
-swapon /dev/zvol/$ZROOT/swap
-
-mount -t zfs $ZROOT/root/nixos /mnt
-
-mkdir -p /mnt/home
-mount -t zfs $ZROOT/home /mnt/home
+mkfs.btrfs -f -L root $DISK_ROOT
+mount -o rw,noatime,compress=zstd,ssd,space_cache \
+      $DISK_ROOT /mnt
 
 # create the efi boot partition
 mkfs.vfat $DISK_EFI
-mkdir -p /mnt/boot
-mount $DISK_EFI /mnt/boot
+
+cd /mnt
+btrfs subvolume create @ ## root
+mkdir -p "@/boot" "@/home" "@/var" "@/mnt"
+btrfs subvolume create @home
+btrfs subvolume create @var
+
+if [ -n "$EXTERNALDISK" ]; then
+
+    echo "Will completely erase and format '$EXTERNALDISK', proceed? (y/n)"
+    read answer
+    if ! echo "$answer" | grep '^[Yy].*' 2>&1>/dev/null; then
+        echo "Ok bye."
+        exit
+    fi
+
+    wipefs -fa $EXTERNALDISK
+    sgdisk -Z $EXTERNALDISK
+    mkdir -p "@/mnt/volumes" "@/mnt/volumes-nocow"
+    mkfs.btrfs -f -L external $EXTERNALDISK
+    ## temp mount
+    mount -o rw,noatime,compress=zstd,ssd,space_cache \
+          $EXTERNALDISK /mnt/@/mnt/volumes
+
+    cd @/mnt/volumes
+    for N in $(seq 1 20); do
+        btrfs subvolume create "@local-volume-$N"
+        btrfs subvolume create "@local-volume-nocow-$N"
+        chattr -R +C "@local-volume-nocow-$N"
+    done
+    cd /mnt
+    umount /mnt/@/mnt/volumes
+fi
+
+cd $DIR
+umount /mnt
+
+# mount the "root" (@) subvolume to /mnt
+mount -o rw,noatime,compress=zstd,ssd,space_cache,subvol=@ \
+      $DISK_ROOT /mnt
+# mount @home subvolume to /mnt/home
+mount -o rw,noatime,compress=zstd,ssd,space_cache,subvol=@home \
+      $DISK_ROOT /mnt/home
+# mount @var subvolume to /mnt/var
+mount -o rw,noatime,compress=zstd,ssd,space_cache,subvol=@var \
+      $DISK_ROOT /mnt/var
+
+BOOT_UUID=$(ls -lah /dev/disk/by-uuid/ | \
+                grep $(basename $DISK_EFI) | awk '{print $9}')
+# and mount the boot partition
+mount /dev/disk/by-uuid/$BOOT_UUID /mnt/boot
+
+# finally, if applicable, mount external disks
+if [ -n "$EXTERNALDISK" ]; then
+    echo "Mounting disks from $EXTERNALDISK"
+    for N in $(seq 1 20); do
+        mkdir -p "/mnt/mnt/volumes/local-volume-$N"
+        mount -o rw,noatime,compress=zstd,ssd,space_cache,subvol="@local-volume-$N" \
+              $EXTERNALDISK "/mnt/mnt/volumes/local-volume-$N"
+        mkdir -p "/mnt/mnt/volumes-nocow/local-volume-$N"
+        mount -o rw,noatime,compress=zstd,ssd,space_cache,subvol="@local-volume-nocow-$N" \
+              $EXTERNALDISK "/mnt/mnt/volumes-nocow/local-volume-$N"
+        chattr -R +C "/mnt/mnt/volumes-nocow/local-volume-$N"
+    done
+fi
+
+echo "Now please make any customizations before we generate the config... (type 'exit' + enter when done)"
+sh
+echo "continuing..."
 
 nixos-generate-config --root /mnt
 cp configuration.nix /mnt/etc/nixos/configuration.nix
@@ -153,7 +209,8 @@ sed -i"" "s|<HOSTID>|$HOSTID|g" /mnt/etc/nixos/meta.nix
 sed -i"" "s|<IPV4>|$IPV4|g" /mnt/etc/nixos/meta.nix
 sed -i"" "s|<GATEWAY>|$GATEWAY|g" /mnt/etc/nixos/meta.nix
 sed -i"" "s|<ENIF>|$ENIF|g" /mnt/etc/nixos/meta.nix
-sed -i"" "s|<ETHMOD>|$ETHMOD|g" /mnt/etc/nixos/meta.nix
+sed -i"" 's|\("subvol=@.*"\)|\1 "rw" "noatime" "compress=zstd" "space_cache"|g' /mnt/etc/nixos/hardware-configuration.nix
+#sed -i"" "s|<ETHMOD>|$ETHMOD|g" /mnt/etc/nixos/meta.nix
 
 echo "-- setting user login password --"
 ## NOTE: -s -p aren't posix compatible but they will work just fine for this
@@ -176,7 +233,7 @@ sed -i"" "s|<PASSWORD>|$PASS|g" /mnt/etc/nixos/meta.nix
 unset PASS
 
 ## Generate the dropbear initrd ssh keys
-nix-shell -p dropbear --command "dropbearkey -t ecdsa -f /mnt/etc/nixos/initrd-ssh-key"
+#nix-shell -p dropbear --command "dropbearkey -t ecdsa -f /mnt/etc/nixos/initrd-ssh-key"
 
 echo "Now modify anything else you need in /mnt/etc/nixos/meta.nix"
 echo "then run 'nixos-install'"

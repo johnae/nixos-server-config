@@ -14,31 +14,31 @@ in
     ];
 
   # Use the systemd-boot EFI boot loader.
-  boot = {
-    ## check with lspci -v -s <module>
-    ## ip=192.168.1.100::192.168.1.1:255.255.255.0:somehostname:eth0:on
-    kernelParams = ["ip=${meta.ipv4}::${meta.defaultGateway}:255.255.255.0:${meta.hostName}:eth0:none"];
-    initrd.availableKernelModules = meta.initrdAvailableKernelModules;
-    initrd.network = {
-      enable = true;
-      ssh = {
-         enable = true;
-         ## use different port to avoid ssh freaking out because of host key
-         port = 2222;
-         ## nix-shell -p dropbear --command "dropbearkey -t ecdsa -f /tmp/initrd-ssh-key"
-         hostECDSAKey = [ "/etc/nixos/initrd-ssh-key" ];
-         authorizedKeys = meta.authorizedKeys;
-      };
-      postCommands = ''
-        echo "zfs load-key -a; killall zfs" >> /root/.profile
-      '';
-    };
-  };
+  #boot = {
+  #  ## check with lspci -v -s <module>
+  #  ## ip=192.168.1.100::192.168.1.1:255.255.255.0:somehostname:eth0:on
+  #  kernelParams = ["ip=${meta.ipv4}::${meta.defaultGateway}:255.255.255.0:${meta.hostName}:eth0:none"];
+  #  initrd.availableKernelModules = meta.initrdAvailableKernelModules;
+  #  initrd.network = {
+  #    enable = true;
+  #    ssh = {
+  #       enable = true;
+  #       ## use different port to avoid ssh freaking out because of host key
+  #       port = 2222;
+  #       ## nix-shell -p dropbear --command "dropbearkey -t ecdsa -f /tmp/initrd-ssh-key"
+  #       hostECDSAKey = [ "/etc/nixos/initrd-ssh-key" ];
+  #       authorizedKeys = meta.authorizedKeys;
+  #    };
+  #    postCommands = ''
+  #      echo "zfs load-key -a; killall zfs" >> /root/.profile
+  #    '';
+  #  };
+  #};
 
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
-  boot.zfs.enableUnstable = true;
-  boot.supportedFilesystems = [ "zfs" ];
+  #boot.zfs.enableUnstable = true;
+  #boot.supportedFilesystems = [ "zfs" ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
   hardware.cpu.intel.updateMicrocode = true;
@@ -55,7 +55,7 @@ in
   networking.firewall.enable = false;
 
   virtualisation.docker.enable = true;
-  virtualisation.docker.storageDriver = "zfs";
+  #virtualisation.docker.storageDriver = "zfs";
 
   i18n = {
     consoleFont = meta.consoleFont;
@@ -74,7 +74,7 @@ in
   # };
 
   environment.systemPackages = with pkgs; [
-    wget vim curl zfsUnstable
+    wget vim curl
   ];
 
   programs.fish.enable = true;
